@@ -11,6 +11,12 @@ permissions:
   contents: read
 
 jobs:
+  runner-diagnostic:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm GitHub-hosted runner availability
+        run: echo "GitHub Actions runner started"
+
   build-test-package:
     runs-on: windows-latest
     timeout-minutes: 30
