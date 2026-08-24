@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gilodam"
+version = "1.0.0a2"
+description = "Windows-first, local-only digital asset manager vertical slice"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "Pillow>=10.4,<13",
+  "PyMuPDF>=1.24,<2",
+]
+
+[project.optional-dependencies]
+build = ["PyInstaller>=6.10,<7"]
+test = []
+
+[project.scripts]
+gilodam = "gilodam.app:main"
+
+[tool.setuptools]
+packages = ["gilodam"]
+
+[tool.unittest]
+start-directory = "tests"
