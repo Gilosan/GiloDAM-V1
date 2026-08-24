@@ -1,0 +1,83 @@
+name: Windows EXE acceptance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: pip
+
+      - name: Install dependencies
+        shell: pwsh
+        run: python -m pip install --disable-pip-version-check -r requirements-build.txt
+
+      - name: Run source tests
+        shell: pwsh
+        run: python -m unittest discover -v
+
+      - name: Build single Windows executable
+        shell: pwsh
+        run: python -m PyInstaller --noconfirm --clean packaging/GiloDAM.spec
+
+      - name: Verify EXE identity and clean diagnostic restart
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist/GiloDAM.exe"
+          if (-not (Test-Path $exe)) { throw "GiloDAM.exe was not created" }
+          if ((Get-Item $exe).Length -lt 1000000) { throw "GiloDAM.exe is unexpectedly small" }
+          $data = Join-Path $env:RUNNER_TEMP "gilodam-acceptance"
+          & $exe --self-test --data-dir $data
+          if ($LASTEXITCODE -ne 0) { throw "First EXE self-test failed" }
+          & $exe --self-test --data-dir $data
+          if ($LASTEXITCODE -ne 0) { throw "Restart/persistence self-test failed" }
+
+      - name: Verify GUI opens and closes cleanly twice
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist/GiloDAM.exe"
+          $data = Join-Path $env:RUNNER_TEMP "gilodam-gui"
+          & $exe --ui-smoke-test --data-dir $data
+          if ($LASTEXITCODE -ne 0) { throw "First GUI launch/close failed" }
+          & $exe --ui-smoke-test --data-dir $data
+          if ($LASTEXITCODE -ne 0) { throw "GUI restart failed" }
+
+      - name: Verify catalog integrity after restart
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "dist/GiloDAM.exe"
+          $data = Join-Path $env:RUNNER_TEMP "gilodam-gui"
+          & $exe --self-test --data-dir $data
+          if ($LASTEXITCODE -ne 0) { throw "Post-GUI catalog check failed" }
+
+      - name: Stage verified release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item dist/GiloDAM.exe release/GiloDAM.exe
+          Copy-Item docs/RELEASE_STATUS.md release/RELEASE_NOTES.txt
+          Get-FileHash release/GiloDAM.exe -Algorithm SHA256 | Format-List | Out-File release/SHA256.txt
+          $files = Get-ChildItem release -File | Select-Object -ExpandProperty Name
+          if ($files -contains "BUILD_WINDOWS.bat") { throw "BAT file found in release" }
+          if (-not ($files -contains "GiloDAM.exe")) { throw "EXE missing from release" }
+
+      - name: Upload verified EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: GiloDAM-Windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
