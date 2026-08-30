@@ -1,0 +1,93 @@
+name: Step 9 Windows EXE acceptance
+
+on:
+  push:
+    branches: [step9-windows-build]
+    paths:
+      - "step9_payload/**"
+      - ".github/workflows/step9-windows-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reconstruct hardened Step 9 source
+        shell: pwsh
+        run: |
+          $chunks = Get-ChildItem "step9_payload/chunk_*.b64" | Sort-Object Name
+          if ($chunks.Count -ne 7) { throw "Expected 7 Step 9 payload chunks, found $($chunks.Count)" }
+          $b64 = ($chunks | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          [IO.File]::WriteAllBytes("GiloDAM_V1_Step9_Hardened.zip", [Convert]::FromBase64String($b64))
+          Expand-Archive -Path "GiloDAM_V1_Step9_Hardened.zip" -DestinationPath "step9_src" -Force
+          if (-not (Test-Path "step9_src/GiloDAM_V1_Step9/main.py")) { throw "Step 9 payload did not reconstruct correctly" }
+          if (-not (Test-Path "step9_src/GiloDAM_V1_Step9/tests/test_step9_hardening.py")) { throw "Hardening tests are missing" }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: "x64"
+          cache: pip
+          cache-dependency-path: |
+            step9_src/GiloDAM_V1_Step9/requirements.txt
+            step9_src/GiloDAM_V1_Step9/requirements-build.txt
+
+      - name: Install runtime and build dependencies
+        shell: pwsh
+        working-directory: step9_src/GiloDAM_V1_Step9
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check -r requirements-build.txt
+
+      - name: Run all hardened source tests on Windows
+        shell: pwsh
+        working-directory: step9_src/GiloDAM_V1_Step9
+        run: python -m unittest discover -s tests -v
+
+      - name: Build single Windows executable
+        shell: pwsh
+        working-directory: step9_src/GiloDAM_V1_Step9
+        run: python -m PyInstaller --noconfirm --clean GiloDAM.spec
+
+      - name: Verify executable and GUI launch
+        shell: pwsh
+        run: |
+          $exe = Resolve-Path "step9_src/GiloDAM_V1_Step9/dist/GiloDAM.exe"
+          if (-not (Test-Path $exe)) { throw "GiloDAM.exe was not created" }
+          $size = (Get-Item $exe).Length
+          if ($size -lt 1000000) { throw "GiloDAM.exe is unexpectedly small: $size bytes" }
+          $data = Join-Path $env:RUNNER_TEMP "gilodam-step9-smoke"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          $env:GILODAM_DATA_DIR = $data
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) { throw "GiloDAM.exe exited during GUI launch smoke test (exit $($p.ExitCode))" }
+          if (-not (Test-Path (Join-Path $data "gilodam.db"))) { Stop-Process -Id $p.Id -Force; throw "GiloDAM did not initialize its Windows data store" }
+          Stop-Process -Id $p.Id -Force
+          Start-Sleep -Seconds 1
+          $p2 = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 5
+          if ($p2.HasExited) { throw "GiloDAM.exe failed on second launch (exit $($p2.ExitCode))" }
+          Stop-Process -Id $p2.Id -Force
+
+      - name: Stage verified executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item "step9_src/GiloDAM_V1_Step9/dist/GiloDAM.exe" "release/GiloDAM.exe"
+          (Get-FileHash "release/GiloDAM.exe" -Algorithm SHA256).Hash | Out-File "release/SHA256.txt" -Encoding ascii
+          "GiloDAM Step 9 hardened Windows x64 acceptance build.`nBuilt from the frozen Step 9 source payload.`nSource tests: 54.`nBuilt and GUI launch-smoke-tested twice on GitHub windows-latest." | Out-File "release/README.txt" -Encoding utf8
+
+      - name: Upload verified Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: GiloDAM-Step9-Windows-x64
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
